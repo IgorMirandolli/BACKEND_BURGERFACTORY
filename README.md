@@ -1,0 +1,1 @@
+echo "# Burger Factory" > README.md
