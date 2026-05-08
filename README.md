@@ -1,5 +1,23 @@
 # 🍔 Burger Factory — Backend API
 
+<p align="center">
+  <img src="./public/logoburguerfactory.png" width="260" alt="Burger Factory Logo" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Node.js-22+-339933?logo=node.js" />
+  <img src="https://img.shields.io/badge/Express-5.x-000000?logo=express" />
+  <img src="https://img.shields.io/badge/MySQL-8+-4479A1?logo=mysql" />
+  <img src="https://img.shields.io/badge/API-REST-orange" />
+  <img src="https://img.shields.io/badge/Status-Em%20desenvolvimento-yellow" />
+</p>
+
+<p align="center">
+  🇧🇷 Português
+</p>
+
+---
+
 API REST da **Burger Factory**, responsável por autenticação de usuários, gerenciamento de cardápio e integração com banco de dados MySQL.
 
 O projeto foi desenvolvido utilizando **Node.js + Express**, seguindo uma estrutura organizada e preparada para expansão futura.
@@ -82,6 +100,8 @@ DB_PASSWORD=sua_senha
 npm run dev
 ```
 
+---
+
 ## 🔹 Produção/local
 
 ```bash
@@ -146,7 +166,7 @@ A tabela `users` é criada automaticamente ao iniciar o backend.
 
 ---
 
-## 🍔 Estrutura do cardápio
+# 🍔 Estrutura do cardápio
 
 O endpoint:
 
@@ -222,6 +242,8 @@ Cria um usuário com role padrão:
 customer
 ```
 
+---
+
 ### Body
 
 ```json
@@ -231,6 +253,8 @@ customer
   "password": "123456"
 }
 ```
+
+---
 
 ### Resposta
 
@@ -248,9 +272,9 @@ customer
 
 ---
 
-## 🔑 Login
+# 🔑 Login
 
-### `POST /api/auth/login`
+## `POST /api/auth/login`
 
 ### Body
 
@@ -265,9 +289,9 @@ Retorna um token JWT válido.
 
 ---
 
-## 🔍 Verificar token
+# 🔍 Verificar token
 
-### `GET /api/auth/verify`
+## `GET /api/auth/verify`
 
 ### Header
 
@@ -277,9 +301,9 @@ Authorization: Bearer <jwt>
 
 ---
 
-## ♻️ Revalidar token
+# ♻️ Revalidar token
 
-### `GET /api/auth/revalidate`
+## `GET /api/auth/revalidate`
 
 Gera um novo token baseado no token atual.
 
@@ -291,9 +315,9 @@ Authorization: Bearer <jwt>
 
 ---
 
-## 👑 Rota protegida para admin
+# 👑 Rota protegida para admin
 
-### `GET /api/auth/admin-only`
+## `GET /api/auth/admin-only`
 
 ### Header
 
@@ -362,6 +386,7 @@ public/menu/
 # 🔐 Fluxo de autenticação
 
 1. Fazer login:
+
 ```http
 POST /api/auth/login
 ```
@@ -392,7 +417,7 @@ Authorization: Bearer <token>
 | Script | Descrição |
 |---|---|
 | `npm start` | Inicia o servidor |
-| `npm run dev` | Inicia com watch mode |
+| `npm run dev` | Inicia em modo desenvolvimento |
 
 ---
 
@@ -402,7 +427,7 @@ Authorization: Bearer <token>
 - Upload de imagens
 - Carrinho de compras
 - Sistema de pedidos
-- Integração com pagamento
+- Integração com pagamentos
 - Dashboard admin
 - Logs e monitoramento
 - Testes automatizados
@@ -416,8 +441,14 @@ Este projeto está sob a licença MIT.
 
 ---
 
-# 👨‍💻 Autor
+# 👨‍💻 Desenvolvedor
 
 Desenvolvido por **Igor Mirandolli**
 
-🍔 Burger Factory — *Feito para satisfazer.*
+[![GitHub](https://img.shields.io/badge/IgorMirandolli-181717?style=flat&logo=github)](https://github.com/IgorMirandolli)
+
+---
+
+# 🍔 Burger Factory
+
+> Feito para satisfazer.
