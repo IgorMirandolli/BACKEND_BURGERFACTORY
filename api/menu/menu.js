@@ -21,7 +21,17 @@ function menuApi(app) {
         `
       );
 
-      return res.status(200).json({ items: rows });
+      const items = rows.map((item) => {
+        const imagePath = item.imageUrl || '';
+        const normalizedImageUrl = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+
+        return {
+          ...item,
+          imageUrl: normalizedImageUrl,
+        };
+      });
+
+      return res.status(200).json({ items });
     } catch (_error) {
       return res.status(500).json({ message: 'Erro ao carregar cardapio.' });
     }
