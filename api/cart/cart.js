@@ -76,6 +76,36 @@ async function getProductById(productId) {
   return rows[0];
 }
 
+async function findActiveCart({ userId, sessionId }) {
+  let rows;
+
+  if (userId) {
+    [rows] = await pool.query(
+      `
+        SELECT id
+        FROM carts
+        WHERE user_id = ? AND status = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [userId]
+    );
+  } else {
+    [rows] = await pool.query(
+      `
+        SELECT id
+        FROM carts
+        WHERE session_id = ? AND status = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [sessionId]
+    );
+  }
+
+  return rows[0] || null;
+}
+
 function cartApi(app) {
   app.post('/api/cart/items', async (req, res) => {
     try {
@@ -133,6 +163,76 @@ function cartApi(app) {
       });
     } catch (_error) {
       return res.status(500).json({ message: 'Erro ao adicionar item no carrinho.' });
+    }
+  });
+
+  app.delete('/api/cart/items/:itemId', async (req, res) => {
+    try {
+      const userId = getUserIdFromAuthHeader(req);
+      const sessionId = req.query.session_id;
+      const itemId = Number(req.params.itemId);
+
+      if (!Number.isInteger(itemId) || itemId <= 0) {
+        return res.status(400).json({ message: 'itemId invalido.' });
+      }
+
+      if (!userId && !sessionId) {
+        return res.status(400).json({ message: 'session_id e obrigatorio para visitante.' });
+      }
+
+      const cart = await findActiveCart({ userId, sessionId });
+      if (!cart) {
+        return res.status(404).json({ message: 'Carrinho ativo nao encontrado.' });
+      }
+
+      const [result] = await pool.query('DELETE FROM cart_items WHERE id = ? AND cart_id = ?', [itemId, cart.id]);
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: 'Item do carrinho nao encontrado.' });
+      }
+
+      return res.status(200).json({ message: 'Item removido do carrinho.' });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao remover item do carrinho.' });
+    }
+  });
+
+  app.patch('/api/cart/items/:itemId', async (req, res) => {
+    try {
+      const userId = getUserIdFromAuthHeader(req);
+      const sessionId = req.query.session_id;
+      const itemId = Number(req.params.itemId);
+      const quantity = Number(req.body.quantity);
+
+      if (!Number.isInteger(itemId) || itemId <= 0) {
+        return res.status(400).json({ message: 'itemId invalido.' });
+      }
+
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        return res.status(400).json({ message: 'quantity deve ser inteiro maior que zero.' });
+      }
+
+      if (!userId && !sessionId) {
+        return res.status(400).json({ message: 'session_id e obrigatorio para visitante.' });
+      }
+
+      const cart = await findActiveCart({ userId, sessionId });
+      if (!cart) {
+        return res.status(404).json({ message: 'Carrinho ativo nao encontrado.' });
+      }
+
+      const [result] = await pool.query(
+        'UPDATE cart_items SET quantity = ? WHERE id = ? AND cart_id = ?',
+        [quantity, itemId, cart.id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: 'Item do carrinho nao encontrado.' });
+      }
+
+      return res.status(200).json({ message: 'Quantidade atualizada.' });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao atualizar quantidade do item.' });
     }
   });
 
