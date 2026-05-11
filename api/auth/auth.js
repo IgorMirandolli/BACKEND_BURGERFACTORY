@@ -3,6 +3,27 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../../config/db');
 const { generateToken } = require('../../config/passport');
 
+const ALLOWED_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'icloud.com',
+  'yahoo.com',
+  'yahoo.com.br',
+]);
+
+function isValidEmail(rawEmail) {
+  if (!rawEmail || rawEmail.includes(' ')) return false;
+
+  const normalized = String(rawEmail).toLowerCase().trim();
+  const formatOk = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized);
+  if (!formatOk) return false;
+
+  const domain = normalized.split('@')[1];
+  return ALLOWED_EMAIL_DOMAINS.has(domain);
+}
+
 async function findUserByEmail(email) {
   const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
   return rows[0];
@@ -31,6 +52,13 @@ function authApi(app) {
         return res.status(400).json({ message: 'name, email e password sao obrigatorios.' });
       }
 
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          message:
+            'Email invalido. Use um provedor permitido: gmail, outlook, hotmail, live, icloud ou yahoo.',
+        });
+      }
+
       const exists = await findUserByEmail(email);
       if (exists) {
         return res.status(409).json({ message: 'Email ja cadastrado.' });
@@ -52,6 +80,13 @@ function authApi(app) {
 
       if (!email || !password) {
         return res.status(400).json({ message: 'email e password sao obrigatorios.' });
+      }
+
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          message:
+            'Email invalido. Use um provedor permitido: gmail, outlook, hotmail, live, icloud ou yahoo.',
+        });
       }
 
       const user = await findUserByEmail(email);
