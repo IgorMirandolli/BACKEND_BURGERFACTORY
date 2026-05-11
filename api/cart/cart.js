@@ -106,6 +106,16 @@ async function findActiveCart({ userId, sessionId }) {
   return rows[0] || null;
 }
 
+async function tableExists(connection, tableName) {
+  const [rows] = await connection.query('SHOW TABLES LIKE ?', [tableName]);
+  return rows.length > 0;
+}
+
+async function getTableColumns(connection, tableName) {
+  const [rows] = await connection.query(`SHOW COLUMNS FROM ${tableName}`);
+  return new Set(rows.map((row) => row.Field));
+}
+
 function cartApi(app) {
   app.post('/api/cart/items', async (req, res) => {
     try {
@@ -303,6 +313,160 @@ function cartApi(app) {
       return res.status(200).json({ items: normalizedItems, total });
     } catch (_error) {
       return res.status(500).json({ message: 'Erro ao buscar carrinho.' });
+    }
+  });
+
+  app.post('/api/cart/checkout', async (req, res) => {
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
+
+    try {
+      const userId = getUserIdFromAuthHeader(req);
+      const sessionId = req.query.session_id || req.body.session_id || null;
+
+      if (!userId && !sessionId) {
+        return res.status(400).json({ message: 'session_id e obrigatorio para visitante.' });
+      }
+
+      const { customer_name: customerName, customer_phone: customerPhone, delivery_address: deliveryAddress, payment_method: paymentMethod, notes = null } = req.body;
+
+      if (!customerName || !deliveryAddress || !paymentMethod) {
+        return res.status(400).json({
+          message: 'customer_name, delivery_address e payment_method sao obrigatorios.',
+        });
+      }
+
+      let cartRows;
+      if (userId) {
+        [cartRows] = await connection.query(
+          `
+            SELECT id, user_id, session_id
+            FROM carts
+            WHERE user_id = ? AND status = 'active'
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+          [userId]
+        );
+      } else {
+        [cartRows] = await connection.query(
+          `
+            SELECT id, user_id, session_id
+            FROM carts
+            WHERE session_id = ? AND status = 'active'
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+          [sessionId]
+        );
+      }
+
+      const cart = cartRows[0];
+      if (!cart) {
+        return res.status(404).json({ message: 'Carrinho ativo nao encontrado.' });
+      }
+
+      const [items] = await connection.query(
+        `
+          SELECT
+            ci.id,
+            ci.product_id,
+            ci.quantity,
+            ci.unit_price,
+            ci.notes
+          FROM cart_items ci
+          WHERE ci.cart_id = ?
+          ORDER BY ci.id DESC
+        `,
+        [cart.id]
+      );
+
+      if (items.length === 0) {
+        return res.status(400).json({ message: 'Carrinho vazio. Adicione itens para finalizar o pedido.' });
+      }
+
+      const total = items.reduce((acc, item) => acc + Number(item.unit_price) * Number(item.quantity), 0);
+
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      let orderId = null;
+      try {
+        const hasOrdersTable = await tableExists(connection, 'orders');
+        const hasOrderItemsTable = await tableExists(connection, 'order_items');
+
+        if (hasOrdersTable) {
+          const orderColumns = await getTableColumns(connection, 'orders');
+          const orderData = {};
+
+          if (orderColumns.has('user_id')) orderData.user_id = userId || null;
+          if (orderColumns.has('session_id')) orderData.session_id = sessionId || null;
+          if (orderColumns.has('status')) orderData.status = 'pending';
+          if (orderColumns.has('total_amount')) orderData.total_amount = total;
+          if (orderColumns.has('customer_name')) orderData.customer_name = customerName;
+          if (orderColumns.has('customer_phone')) orderData.customer_phone = customerPhone || null;
+          if (orderColumns.has('delivery_address')) orderData.delivery_address = deliveryAddress;
+          if (orderColumns.has('payment_method')) orderData.payment_method = paymentMethod;
+          if (orderColumns.has('notes')) orderData.notes = notes;
+
+          const fields = Object.keys(orderData);
+          if (fields.length > 0) {
+            const placeholders = fields.map(() => '?').join(', ');
+            const [insertOrderResult] = await connection.query(
+              `INSERT INTO orders (${fields.join(', ')}) VALUES (${placeholders})`,
+              fields.map((field) => orderData[field])
+            );
+
+            orderId = insertOrderResult.insertId;
+          }
+        }
+
+        if (hasOrderItemsTable && orderId) {
+          const orderItemColumns = await getTableColumns(connection, 'order_items');
+
+          for (const item of items) {
+            const itemData = {};
+
+            if (orderItemColumns.has('order_id')) itemData.order_id = orderId;
+            if (orderItemColumns.has('product_id')) itemData.product_id = item.product_id;
+            if (orderItemColumns.has('quantity')) itemData.quantity = item.quantity;
+            if (orderItemColumns.has('unit_price')) itemData.unit_price = item.unit_price;
+            if (orderItemColumns.has('notes')) itemData.notes = item.notes;
+
+            const fields = Object.keys(itemData);
+            if (fields.length > 0) {
+              const placeholders = fields.map(() => '?').join(', ');
+              await connection.query(
+                `INSERT INTO order_items (${fields.join(', ')}) VALUES (${placeholders})`,
+                fields.map((field) => itemData[field])
+              );
+            }
+          }
+        }
+      } catch {
+        orderId = null;
+      }
+
+      try {
+        await connection.query('UPDATE carts SET status = ? WHERE id = ?', ['completed', cart.id]);
+      } catch {
+        await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cart.id]);
+      }
+      await connection.commit();
+
+      return res.status(201).json({
+        message: 'Pedido finalizado com sucesso.',
+        order_id: orderId,
+        total,
+      });
+    } catch (_error) {
+      if (transactionStarted) {
+        await connection.rollback();
+      }
+      console.error('Erro detalhado no checkout:', _error);
+      return res.status(500).json({ message: 'Erro ao finalizar pedido.' });
+    } finally {
+      connection.release();
     }
   });
 }
