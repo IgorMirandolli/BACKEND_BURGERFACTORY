@@ -3,6 +3,7 @@ const verifyApi = require('../api/auth/verify');
 const revalidateApi = require('../api/auth/revalidate');
 const menuApi = require('../api/menu/menu');
 const cartApi = require('../api/cart/cart');
+const ordersApi = require('../api/orders/orders');
 
 function registerRoutes(app) {
   authApi(app);
@@ -10,6 +11,7 @@ function registerRoutes(app) {
   revalidateApi(app);
   menuApi(app);
   cartApi(app);
+  ordersApi(app);
 
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
