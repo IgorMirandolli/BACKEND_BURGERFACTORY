@@ -29,16 +29,23 @@ async function findUserByEmail(email) {
   return rows[0];
 }
 
-async function createUser({ name, email, passwordHash, role }) {
+function normalizePhone(rawPhone) {
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 11) return null;
+  return digits;
+}
+
+async function createUser({ name, email, fone, passwordHash, role }) {
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
-    [name, email, passwordHash, role]
+    'INSERT INTO users (name, email, fone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+    [name, email, fone, passwordHash, role]
   );
 
   return {
     id: result.insertId,
     name,
     email,
+    fone,
     role,
   };
 }
@@ -46,10 +53,16 @@ async function createUser({ name, email, passwordHash, role }) {
 function authApi(app) {
   app.post('/api/auth/register', async (req, res) => {
     try {
-      const { name, email, password } = req.body;
+      const { name, email, password, fone, phone } = req.body;
+      const rawPhone = fone || phone;
 
-      if (!name || !email || !password) {
-        return res.status(400).json({ message: 'name, email e password sao obrigatorios.' });
+      if (!name || !email || !password || !rawPhone) {
+        return res.status(400).json({ message: 'name, email, password e fone sao obrigatorios.' });
+      }
+
+      const normalizedPhone = normalizePhone(rawPhone);
+      if (!normalizedPhone) {
+        return res.status(400).json({ message: 'fone invalido. Informe DDD + numero com 10 ou 11 digitos.' });
       }
 
       if (!isValidEmail(email)) {
@@ -65,7 +78,13 @@ function authApi(app) {
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
-      const user = await createUser({ name, email, passwordHash, role: 'customer' });
+      const user = await createUser({
+        name,
+        email,
+        fone: normalizedPhone,
+        passwordHash,
+        role: 'customer',
+      });
       const token = generateToken(user);
 
       return res.status(201).json({ user, token });
@@ -103,6 +122,7 @@ function authApi(app) {
         id: user.id,
         name: user.name,
         email: user.email,
+        fone: user.fone || null,
         role: user.role,
       };
 
