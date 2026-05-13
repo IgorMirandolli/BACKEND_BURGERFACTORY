@@ -7,6 +7,7 @@ function menuApi(app) {
         `
           SELECT
             p.id,
+            c.id AS categoryId,
             c.slug AS category,
             p.name,
             p.description,
