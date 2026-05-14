@@ -5,7 +5,7 @@ function verifyApi(app) {
   app.get('/api/auth/verify', authMiddleware, async (req, res) => {
     try {
       const [rows] = await pool.query(
-        'SELECT id, name, email, fone, role FROM users WHERE id = ? LIMIT 1',
+        'SELECT id, name, email, fone, avatar_url, role FROM users WHERE id = ? LIMIT 1',
         [req.user.id]
       );
 

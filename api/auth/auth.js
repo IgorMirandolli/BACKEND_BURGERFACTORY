@@ -46,6 +46,7 @@ async function createUser({ name, email, fone, passwordHash, role }) {
     name,
     email,
     fone,
+    avatar_url: null,
     role,
   };
 }
@@ -123,6 +124,7 @@ function authApi(app) {
         name: user.name,
         email: user.email,
         fone: user.fone || null,
+        avatar_url: user.avatar_url || null,
         role: user.role,
       };
 

@@ -1,8 +1,14 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const { authMiddleware } = require('../../config/middlewares');
 const { pool } = require('../../config/db');
+
+const AVATAR_UPLOAD_DIR = path.join(__dirname, '../../public/uploads/avatars');
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const ALLOWED_AVATAR_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 
 const ALLOWED_EMAIL_DOMAINS = new Set([
   'gmail.com',
@@ -44,10 +50,59 @@ function normalizeBirthDate(rawBirthDate) {
   return value;
 }
 
+function ensureAvatarUploadDir() {
+  fs.mkdirSync(AVATAR_UPLOAD_DIR, { recursive: true });
+}
+
+function parseAvatarDataUrl(dataUrl) {
+  const value = String(dataUrl || '').trim();
+  const match = value.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,([a-z0-9+/=\r\n]+)$/i);
+  if (!match) return null;
+
+  const mimeType = match[1].toLowerCase();
+  if (!ALLOWED_AVATAR_MIME.has(mimeType)) return null;
+
+  const base64Content = match[2].replace(/\s/g, '');
+  const buffer = Buffer.from(base64Content, 'base64');
+  if (!buffer.length || buffer.length > MAX_AVATAR_BYTES) return null;
+
+  const extensionByMime = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+  };
+
+  return {
+    mimeType,
+    extension: extensionByMime[mimeType],
+    buffer,
+  };
+}
+
+function buildAvatarFileName(userId, extension) {
+  return `avatar_${userId}_${Date.now()}_${crypto.randomUUID()}.${extension}`;
+}
+
+function deleteLocalManagedAvatar(avatarUrl) {
+  const value = String(avatarUrl || '');
+  if (!value.startsWith('/uploads/avatars/')) return;
+
+  try {
+    const fileName = path.basename(value);
+    const filePath = path.join(AVATAR_UPLOAD_DIR, fileName);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // If deleting old avatar fails, we keep profile flow working.
+  }
+}
+
 async function findUserById(userId) {
   const [rows] = await pool.query(
     `
-      SELECT id, name, email, fone, birth_date, gender, role, created_at
+      SELECT id, name, email, fone, birth_date, gender, avatar_url, role, created_at
       FROM users
       WHERE id = ?
       LIMIT 1
@@ -130,6 +185,46 @@ function profileApi(app) {
     }
   });
 
+  app.put('/api/profile/avatar', authMiddleware, async (req, res) => {
+    try {
+      const { avatar_base64: avatarBase64 } = req.body;
+      if (!avatarBase64) {
+        return res.status(400).json({ message: 'avatar_base64 e obrigatorio.' });
+      }
+
+      const parsedAvatar = parseAvatarDataUrl(avatarBase64);
+      if (!parsedAvatar) {
+        return res.status(400).json({
+          message: 'Avatar invalido. Use imagem JPG, PNG ou WEBP com ate 5MB.',
+        });
+      }
+
+      const user = await findUserById(req.user.id);
+      if (!user) {
+        return res.status(404).json({ message: 'Usuario nao encontrado.' });
+      }
+
+      ensureAvatarUploadDir();
+      const avatarFileName = buildAvatarFileName(req.user.id, parsedAvatar.extension);
+      const avatarPublicPath = `/uploads/avatars/${avatarFileName}`;
+      const avatarFilePath = path.join(AVATAR_UPLOAD_DIR, avatarFileName);
+
+      fs.writeFileSync(avatarFilePath, parsedAvatar.buffer);
+
+      deleteLocalManagedAvatar(user.avatar_url);
+
+      await pool.query('UPDATE users SET avatar_url = ? WHERE id = ?', [avatarPublicPath, req.user.id]);
+      const updatedUser = await findUserById(req.user.id);
+
+      return res.status(200).json({
+        message: 'Foto de perfil atualizada com sucesso.',
+        user: updatedUser,
+      });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao atualizar foto de perfil.' });
+    }
+  });
+
   app.put('/api/profile/password', authMiddleware, async (req, res) => {
     try {
       const {
@@ -178,14 +273,16 @@ function profileApi(app) {
 
   app.delete('/api/profile', authMiddleware, async (req, res) => {
     try {
-      const [userRows] = await pool.query('SELECT id FROM users WHERE id = ? LIMIT 1', [req.user.id]);
-      if (!userRows[0]) {
+      const user = await findUserById(req.user.id);
+      if (!user) {
         return res.status(404).json({ message: 'Usuario nao encontrado.' });
       }
 
       const randomSecret = crypto.randomUUID();
       const anonymizedPasswordHash = await bcrypt.hash(randomSecret, 10);
       const anonymizedEmail = `deleted_${req.user.id}_${Date.now()}@deleted.local`;
+
+      deleteLocalManagedAvatar(user.avatar_url);
 
       try {
         await pool.query('UPDATE carts SET user_id = NULL WHERE user_id = ?', [req.user.id]);
@@ -208,6 +305,7 @@ function profileApi(app) {
             fone = NULL,
             birth_date = NULL,
             gender = NULL,
+            avatar_url = NULL,
             password_hash = ?
           WHERE id = ?
         `,
