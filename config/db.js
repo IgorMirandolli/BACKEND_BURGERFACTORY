@@ -17,6 +17,8 @@ async function initDb() {
       name VARCHAR(120) NOT NULL,
       email VARCHAR(160) NOT NULL UNIQUE,
       fone VARCHAR(20) NULL,
+      birth_date DATE NULL,
+      gender VARCHAR(30) NULL,
       password_hash TEXT NOT NULL,
       role VARCHAR(30) NOT NULL DEFAULT 'customer',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -34,6 +36,30 @@ async function initDb() {
 
   if (phoneColumn.length === 0) {
     await pool.query('ALTER TABLE users ADD COLUMN fone VARCHAR(20) NULL AFTER email');
+  }
+
+  const [birthDateColumn] = await pool.query(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'birth_date'
+  `);
+
+  if (birthDateColumn.length === 0) {
+    await pool.query('ALTER TABLE users ADD COLUMN birth_date DATE NULL AFTER fone');
+  }
+
+  const [genderColumn] = await pool.query(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'gender'
+  `);
+
+  if (genderColumn.length === 0) {
+    await pool.query('ALTER TABLE users ADD COLUMN gender VARCHAR(30) NULL AFTER birth_date');
   }
 }
 
