@@ -106,14 +106,21 @@ async function findActiveCart({ userId, sessionId }) {
   return rows[0] || null;
 }
 
-async function tableExists(connection, tableName) {
-  const [rows] = await connection.query('SHOW TABLES LIKE ?', [tableName]);
-  return rows.length > 0;
+function getCheckoutIdempotencyKey(req) {
+  const fromHeader = req.headers['x-idempotency-key'];
+  const fromBody = req.body?.idempotency_key;
+  const rawValue = String(fromHeader || fromBody || '').trim();
+
+  if (!rawValue) return null;
+  return rawValue.slice(0, 80);
 }
 
-async function getTableColumns(connection, tableName) {
-  const [rows] = await connection.query(`SHOW COLUMNS FROM ${tableName}`);
-  return new Set(rows.map((row) => row.Field));
+function isOrderOwnedByRequester(order, userId, sessionId) {
+  if (userId) {
+    return Number(order.user_id) === Number(userId);
+  }
+
+  return String(order.session_id || '') === String(sessionId || '');
 }
 
 function cartApi(app) {
@@ -141,31 +148,17 @@ function cartApi(app) {
       }
 
       const cart = await findOrCreateActiveCart({ userId, sessionId });
-
-      const [existingItems] = await pool.query(
+      await pool.query(
         `
-          SELECT id, quantity
-          FROM cart_items
-          WHERE cart_id = ? AND product_id = ?
-          LIMIT 1
+          INSERT INTO cart_items (cart_id, product_id, quantity, unit_price, notes)
+          VALUES (?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            quantity = quantity + VALUES(quantity),
+            unit_price = VALUES(unit_price),
+            notes = VALUES(notes)
         `,
-        [cart.id, productId]
+        [cart.id, productId, qty, product.price, notes]
       );
-
-      if (existingItems[0]) {
-        await pool.query(
-          'UPDATE cart_items SET quantity = quantity + ?, notes = ? WHERE id = ?',
-          [qty, notes, existingItems[0].id]
-        );
-      } else {
-        await pool.query(
-          `
-            INSERT INTO cart_items (cart_id, product_id, quantity, unit_price, notes)
-            VALUES (?, ?, ?, ?, ?)
-          `,
-          [cart.id, productId, qty, product.price, notes]
-        );
-      }
 
       return res.status(201).json({
         message: 'Item adicionado ao carrinho.',
@@ -317,18 +310,24 @@ function cartApi(app) {
   });
 
   app.post('/api/cart/checkout', async (req, res) => {
-    const connection = await pool.getConnection();
+    let connection = null;
     let transactionStarted = false;
+    const idempotencyKey = getCheckoutIdempotencyKey(req);
+    const userId = getUserIdFromAuthHeader(req);
+    const sessionId = req.query.session_id || req.body.session_id || null;
 
     try {
-      const userId = getUserIdFromAuthHeader(req);
-      const sessionId = req.query.session_id || req.body.session_id || null;
-
       if (!userId && !sessionId) {
         return res.status(400).json({ message: 'session_id e obrigatorio para visitante.' });
       }
 
-      const { customer_name: customerName, customer_phone: customerPhone, delivery_address: deliveryAddress, payment_method: paymentMethod, notes = null } = req.body;
+      const {
+        customer_name: customerName,
+        customer_phone: customerPhone,
+        delivery_address: deliveryAddress,
+        payment_method: paymentMethod,
+        notes = null,
+      } = req.body;
 
       if (!customerName || !deliveryAddress || !paymentMethod) {
         return res.status(400).json({
@@ -336,7 +335,42 @@ function cartApi(app) {
         });
       }
 
-      let cartRows;
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      if (idempotencyKey) {
+        const [existingOrders] = await connection.query(
+          `
+            SELECT id, user_id, session_id, total_amount
+            FROM orders
+            WHERE idempotency_key = ?
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [idempotencyKey]
+        );
+
+        const existingOrder = existingOrders[0];
+        if (existingOrder) {
+          const sameOwner = isOrderOwnedByRequester(existingOrder, userId, sessionId);
+          await connection.commit();
+          transactionStarted = false;
+
+          if (!sameOwner) {
+            return res.status(409).json({ message: 'Chave de idempotencia ja utilizada.' });
+          }
+
+          return res.status(200).json({
+            message: 'Pedido ja processado anteriormente.',
+            order_id: existingOrder.id,
+            total: Number(existingOrder.total_amount || 0),
+            reused: true,
+          });
+        }
+      }
+
+      let cartRows = [];
       if (userId) {
         [cartRows] = await connection.query(
           `
@@ -345,6 +379,7 @@ function cartApi(app) {
             WHERE user_id = ? AND status = 'active'
             ORDER BY id DESC
             LIMIT 1
+            FOR UPDATE
           `,
           [userId]
         );
@@ -356,6 +391,7 @@ function cartApi(app) {
             WHERE session_id = ? AND status = 'active'
             ORDER BY id DESC
             LIMIT 1
+            FOR UPDATE
           `,
           [sessionId]
         );
@@ -363,6 +399,8 @@ function cartApi(app) {
 
       const cart = cartRows[0];
       if (!cart) {
+        await connection.rollback();
+        transactionStarted = false;
         return res.status(404).json({ message: 'Carrinho ativo nao encontrado.' });
       }
 
@@ -373,100 +411,148 @@ function cartApi(app) {
             ci.product_id,
             ci.quantity,
             ci.unit_price,
-            ci.notes
+            ci.notes,
+            COALESCE(NULLIF(TRIM(p.name), ''), 'Produto indisponivel') AS product_name,
+            p.image_url AS product_image_url
           FROM cart_items ci
+          LEFT JOIN products p ON p.id = ci.product_id
           WHERE ci.cart_id = ?
           ORDER BY ci.id DESC
+          FOR UPDATE
         `,
         [cart.id]
       );
 
       if (items.length === 0) {
+        await connection.rollback();
+        transactionStarted = false;
         return res.status(400).json({ message: 'Carrinho vazio. Adicione itens para finalizar o pedido.' });
       }
 
       const total = items.reduce((acc, item) => acc + Number(item.unit_price) * Number(item.quantity), 0);
 
-      await connection.beginTransaction();
-      transactionStarted = true;
+      const [insertOrderResult] = await connection.query(
+        `
+          INSERT INTO orders (
+            user_id,
+            session_id,
+            cart_id,
+            idempotency_key,
+            status,
+            total_amount,
+            customer_name,
+            customer_phone,
+            delivery_address,
+            payment_method,
+            notes
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          userId || null,
+          sessionId || null,
+          cart.id,
+          idempotencyKey,
+          'pending',
+          total,
+          customerName,
+          customerPhone || null,
+          deliveryAddress,
+          paymentMethod,
+          notes,
+        ]
+      );
+      const orderId = insertOrderResult.insertId;
 
-      let orderId = null;
-      try {
-        const hasOrdersTable = await tableExists(connection, 'orders');
-        const hasOrderItemsTable = await tableExists(connection, 'order_items');
+      const orderItemsValues = items.map((item) => [
+        orderId,
+        item.product_id,
+        item.product_name || 'Produto indisponivel',
+        item.product_image_url || null,
+        item.quantity,
+        item.unit_price,
+        item.notes || null,
+      ]);
 
-        if (hasOrdersTable) {
-          const orderColumns = await getTableColumns(connection, 'orders');
-          const orderData = {};
+      await connection.query(
+        `
+          INSERT INTO order_items (
+            order_id,
+            product_id,
+            product_name,
+            product_image_url,
+            quantity,
+            unit_price,
+            notes
+          )
+          VALUES ?
+        `,
+        [orderItemsValues]
+      );
 
-          if (orderColumns.has('user_id')) orderData.user_id = userId || null;
-          if (orderColumns.has('session_id')) orderData.session_id = sessionId || null;
-          if (orderColumns.has('status')) orderData.status = 'pending';
-          if (orderColumns.has('total_amount')) orderData.total_amount = total;
-          if (orderColumns.has('customer_name')) orderData.customer_name = customerName;
-          if (orderColumns.has('customer_phone')) orderData.customer_phone = customerPhone || null;
-          if (orderColumns.has('delivery_address')) orderData.delivery_address = deliveryAddress;
-          if (orderColumns.has('payment_method')) orderData.payment_method = paymentMethod;
-          if (orderColumns.has('notes')) orderData.notes = notes;
+      const [updateCartResult] = await connection.query(
+        `
+          UPDATE carts
+          SET status = 'completed', checkout_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND status = 'active'
+        `,
+        [cart.id]
+      );
 
-          const fields = Object.keys(orderData);
-          if (fields.length > 0) {
-            const placeholders = fields.map(() => '?').join(', ');
-            const [insertOrderResult] = await connection.query(
-              `INSERT INTO orders (${fields.join(', ')}) VALUES (${placeholders})`,
-              fields.map((field) => orderData[field])
-            );
-
-            orderId = insertOrderResult.insertId;
-          }
-        }
-
-        if (hasOrderItemsTable && orderId) {
-          const orderItemColumns = await getTableColumns(connection, 'order_items');
-
-          for (const item of items) {
-            const itemData = {};
-
-            if (orderItemColumns.has('order_id')) itemData.order_id = orderId;
-            if (orderItemColumns.has('product_id')) itemData.product_id = item.product_id;
-            if (orderItemColumns.has('quantity')) itemData.quantity = item.quantity;
-            if (orderItemColumns.has('unit_price')) itemData.unit_price = item.unit_price;
-            if (orderItemColumns.has('notes')) itemData.notes = item.notes;
-
-            const fields = Object.keys(itemData);
-            if (fields.length > 0) {
-              const placeholders = fields.map(() => '?').join(', ');
-              await connection.query(
-                `INSERT INTO order_items (${fields.join(', ')}) VALUES (${placeholders})`,
-                fields.map((field) => itemData[field])
-              );
-            }
-          }
-        }
-      } catch {
-        orderId = null;
+      if (updateCartResult.affectedRows !== 1) {
+        throw new Error('Nao foi possivel concluir o carrinho.');
       }
 
-      try {
-        await connection.query('UPDATE carts SET status = ? WHERE id = ?', ['completed', cart.id]);
-      } catch {
-        await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cart.id]);
-      }
       await connection.commit();
+      transactionStarted = false;
 
       return res.status(201).json({
         message: 'Pedido finalizado com sucesso.',
-        order_id: orderId,
+        order_id: insertOrderResult.insertId,
         total,
       });
-    } catch (_error) {
+    } catch (error) {
       if (transactionStarted) {
-        await connection.rollback();
+        try {
+          await connection.rollback();
+        } catch {
+          // Ignore rollback failures to preserve original error handling.
+        }
       }
-      console.error('Erro detalhado no checkout:', _error);
+
+      if (idempotencyKey && error?.code === 'ER_DUP_ENTRY') {
+        const [rows] = await pool.query(
+          `
+            SELECT id, user_id, session_id, total_amount
+            FROM orders
+            WHERE idempotency_key = ?
+            LIMIT 1
+          `,
+          [idempotencyKey]
+        );
+
+        const existingOrder = rows[0];
+        if (existingOrder) {
+          const sameOwner = isOrderOwnedByRequester(existingOrder, userId, sessionId);
+          if (!sameOwner) {
+            return res.status(409).json({ message: 'Chave de idempotencia ja utilizada.' });
+          }
+
+          return res.status(200).json({
+            message: 'Pedido ja processado anteriormente.',
+            order_id: existingOrder.id,
+            total: Number(existingOrder.total_amount || 0),
+            reused: true,
+          });
+        }
+      }
+
+      console.error('Erro detalhado no checkout:', error);
       return res.status(500).json({ message: 'Erro ao finalizar pedido.' });
     } finally {
-      connection.release();
+      if (connection) {
+        connection.release();
+      }
     }
   });
 }

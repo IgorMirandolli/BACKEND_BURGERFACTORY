@@ -88,9 +88,9 @@ function ordersApi(app) {
                 WHERE oi.order_id = o.id
               ) AS items_count,
               (
-                SELECT p.image_url
+                SELECT COALESCE(NULLIF(oi.product_image_url, ''), p.image_url)
                 FROM order_items oi
-                INNER JOIN products p ON p.id = oi.product_id
+                LEFT JOIN products p ON p.id = oi.product_id
                 WHERE oi.order_id = o.id
                 ORDER BY oi.id ASC
                 LIMIT 1
@@ -120,9 +120,9 @@ function ordersApi(app) {
                 WHERE oi.order_id = o.id
               ) AS items_count,
               (
-                SELECT p.image_url
+                SELECT COALESCE(NULLIF(oi.product_image_url, ''), p.image_url)
                 FROM order_items oi
-                INNER JOIN products p ON p.id = oi.product_id
+                LEFT JOIN products p ON p.id = oi.product_id
                 WHERE oi.order_id = o.id
                 ORDER BY oi.id ASC
                 LIMIT 1
@@ -214,10 +214,10 @@ function ordersApi(app) {
             oi.quantity,
             oi.unit_price,
             oi.notes,
-            p.name,
-            p.image_url AS imageUrl
+            COALESCE(p.name, oi.product_name, 'Produto indisponivel') AS name,
+            COALESCE(NULLIF(oi.product_image_url, ''), p.image_url) AS imageUrl
           FROM order_items oi
-          INNER JOIN products p ON p.id = oi.product_id
+          LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ?
           ORDER BY oi.id DESC
         `,
