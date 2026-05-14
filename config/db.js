@@ -74,6 +74,28 @@ async function initDb() {
   if (avatarColumn.length === 0) {
     await pool.query('ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500) NULL AFTER gender');
   }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_addresses (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      label VARCHAR(80) NULL,
+      cep VARCHAR(20) NOT NULL,
+      street VARCHAR(160) NOT NULL,
+      address_number VARCHAR(30) NOT NULL,
+      complement VARCHAR(120) NULL,
+      district VARCHAR(120) NULL,
+      city VARCHAR(120) NOT NULL,
+      state VARCHAR(40) NOT NULL,
+      is_default TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_user_addresses_user_id (user_id),
+      CONSTRAINT fk_user_addresses_user
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE CASCADE
+    )
+  `);
 }
 
 module.exports = {

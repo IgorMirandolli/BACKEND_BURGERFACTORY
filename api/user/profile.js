@@ -113,6 +113,133 @@ async function findUserById(userId) {
   return rows[0];
 }
 
+async function listUserAddresses(userId) {
+  const [rows] = await pool.query(
+    `
+      SELECT
+        id,
+        user_id,
+        label,
+        cep,
+        street,
+        address_number,
+        complement,
+        district,
+        city,
+        state,
+        is_default,
+        created_at,
+        updated_at
+      FROM user_addresses
+      WHERE user_id = ?
+      ORDER BY is_default DESC, id DESC
+    `,
+    [userId]
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    is_default: Number(row.is_default) === 1,
+  }));
+}
+
+async function findAddressById(userId, addressId) {
+  const [rows] = await pool.query(
+    `
+      SELECT
+        id,
+        user_id,
+        label,
+        cep,
+        street,
+        address_number,
+        complement,
+        district,
+        city,
+        state,
+        is_default,
+        created_at,
+        updated_at
+      FROM user_addresses
+      WHERE id = ? AND user_id = ?
+      LIMIT 1
+    `,
+    [addressId, userId]
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    is_default: Number(row.is_default) === 1,
+  };
+}
+
+function normalizeAddressText(value, maxLength) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function normalizeCep(rawCep) {
+  const digits = String(rawCep || '').replace(/\D/g, '');
+  if (!digits) return null;
+  return digits.slice(0, 8);
+}
+
+function parseBooleanLike(value) {
+  if (value === true || value === 1 || value === '1' || value === 'true') return true;
+  return false;
+}
+
+function normalizeAddressPayload(payload) {
+  const normalized = {
+    label: normalizeAddressText(payload?.label, 80),
+    cep: normalizeCep(payload?.cep),
+    street: normalizeAddressText(payload?.street, 160),
+    address_number: normalizeAddressText(payload?.address_number, 30),
+    complement: normalizeAddressText(payload?.complement, 120),
+    district: normalizeAddressText(payload?.district, 120),
+    city: normalizeAddressText(payload?.city, 120),
+    state: normalizeAddressText(payload?.state, 40),
+    is_default: parseBooleanLike(payload?.is_default),
+  };
+
+  return normalized;
+}
+
+function validateAddressPayload(address) {
+  if (!address.cep || address.cep.length < 8) {
+    return 'CEP invalido. Informe 8 digitos.';
+  }
+
+  if (!address.street) return 'Rua e obrigatoria.';
+  if (!address.address_number) return 'Numero e obrigatorio.';
+  if (!address.city) return 'Cidade e obrigatoria.';
+  if (!address.state) return 'Estado e obrigatorio.';
+
+  return null;
+}
+
+async function ensureOneDefaultAddress(userId) {
+  const [defaultRows] = await pool.query(
+    'SELECT id FROM user_addresses WHERE user_id = ? AND is_default = 1 LIMIT 1',
+    [userId]
+  );
+
+  if (defaultRows[0]) return;
+
+  const [candidateRows] = await pool.query(
+    'SELECT id FROM user_addresses WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+    [userId]
+  );
+
+  const candidate = candidateRows[0];
+  if (!candidate) return;
+
+  await pool.query('UPDATE user_addresses SET is_default = 1 WHERE id = ? AND user_id = ?', [candidate.id, userId]);
+}
+
 function profileApi(app) {
   app.get('/api/profile', authMiddleware, async (req, res) => {
     try {
@@ -124,6 +251,176 @@ function profileApi(app) {
       return res.status(200).json({ user });
     } catch (_error) {
       return res.status(500).json({ message: 'Erro ao carregar perfil.' });
+    }
+  });
+
+  app.get('/api/profile/addresses', authMiddleware, async (req, res) => {
+    try {
+      const addresses = await listUserAddresses(req.user.id);
+      return res.status(200).json({ items: addresses });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao carregar enderecos.' });
+    }
+  });
+
+  app.post('/api/profile/addresses', authMiddleware, async (req, res) => {
+    try {
+      const payload = normalizeAddressPayload(req.body);
+      const validationMessage = validateAddressPayload(payload);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+
+      let shouldBeDefault = payload.is_default;
+      if (!shouldBeDefault) {
+        const [rows] = await pool.query('SELECT id FROM user_addresses WHERE user_id = ? LIMIT 1', [req.user.id]);
+        shouldBeDefault = rows.length === 0;
+      }
+
+      if (shouldBeDefault) {
+        await pool.query('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?', [req.user.id]);
+      }
+
+      const [insertResult] = await pool.query(
+        `
+          INSERT INTO user_addresses
+            (user_id, label, cep, street, address_number, complement, district, city, state, is_default)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          req.user.id,
+          payload.label,
+          payload.cep,
+          payload.street,
+          payload.address_number,
+          payload.complement,
+          payload.district,
+          payload.city,
+          payload.state,
+          shouldBeDefault ? 1 : 0,
+        ]
+      );
+
+      await ensureOneDefaultAddress(req.user.id);
+      const address = await findAddressById(req.user.id, insertResult.insertId);
+
+      return res.status(201).json({
+        message: 'Endereco adicionado com sucesso.',
+        address,
+      });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao adicionar endereco.' });
+    }
+  });
+
+  app.put('/api/profile/addresses/:addressId', authMiddleware, async (req, res) => {
+    try {
+      const addressId = Number(req.params.addressId);
+      if (!Number.isInteger(addressId) || addressId <= 0) {
+        return res.status(400).json({ message: 'addressId invalido.' });
+      }
+
+      const current = await findAddressById(req.user.id, addressId);
+      if (!current) {
+        return res.status(404).json({ message: 'Endereco nao encontrado.' });
+      }
+
+      const payload = normalizeAddressPayload(req.body);
+      const validationMessage = validateAddressPayload(payload);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+
+      const shouldBeDefault = payload.is_default;
+      if (shouldBeDefault) {
+        await pool.query('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?', [req.user.id]);
+      }
+
+      await pool.query(
+        `
+          UPDATE user_addresses
+          SET
+            label = ?,
+            cep = ?,
+            street = ?,
+            address_number = ?,
+            complement = ?,
+            district = ?,
+            city = ?,
+            state = ?,
+            is_default = ?
+          WHERE id = ? AND user_id = ?
+        `,
+        [
+          payload.label,
+          payload.cep,
+          payload.street,
+          payload.address_number,
+          payload.complement,
+          payload.district,
+          payload.city,
+          payload.state,
+          shouldBeDefault ? 1 : 0,
+          addressId,
+          req.user.id,
+        ]
+      );
+
+      await ensureOneDefaultAddress(req.user.id);
+      const address = await findAddressById(req.user.id, addressId);
+
+      return res.status(200).json({
+        message: 'Endereco atualizado com sucesso.',
+        address,
+      });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao atualizar endereco.' });
+    }
+  });
+
+  app.put('/api/profile/addresses/:addressId/default', authMiddleware, async (req, res) => {
+    try {
+      const addressId = Number(req.params.addressId);
+      if (!Number.isInteger(addressId) || addressId <= 0) {
+        return res.status(400).json({ message: 'addressId invalido.' });
+      }
+
+      const current = await findAddressById(req.user.id, addressId);
+      if (!current) {
+        return res.status(404).json({ message: 'Endereco nao encontrado.' });
+      }
+
+      await pool.query('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?', [req.user.id]);
+      await pool.query('UPDATE user_addresses SET is_default = 1 WHERE id = ? AND user_id = ?', [addressId, req.user.id]);
+
+      const address = await findAddressById(req.user.id, addressId);
+      return res.status(200).json({
+        message: 'Endereco padrao atualizado.',
+        address,
+      });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao definir endereco padrao.' });
+    }
+  });
+
+  app.delete('/api/profile/addresses/:addressId', authMiddleware, async (req, res) => {
+    try {
+      const addressId = Number(req.params.addressId);
+      if (!Number.isInteger(addressId) || addressId <= 0) {
+        return res.status(400).json({ message: 'addressId invalido.' });
+      }
+
+      const current = await findAddressById(req.user.id, addressId);
+      if (!current) {
+        return res.status(404).json({ message: 'Endereco nao encontrado.' });
+      }
+
+      await pool.query('DELETE FROM user_addresses WHERE id = ? AND user_id = ?', [addressId, req.user.id]);
+      await ensureOneDefaultAddress(req.user.id);
+
+      return res.status(200).json({ message: 'Endereco removido com sucesso.' });
+    } catch (_error) {
+      return res.status(500).json({ message: 'Erro ao remover endereco.' });
     }
   });
 
