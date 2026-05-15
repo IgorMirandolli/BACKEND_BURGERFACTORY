@@ -123,6 +123,30 @@ function isOrderOwnedByRequester(order, userId, sessionId) {
   return String(order.session_id || '') === String(sessionId || '');
 }
 
+async function resolveCartCheckoutStatus(connection) {
+  const [rows] = await connection.query(
+    `
+      SELECT COLUMN_TYPE
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'carts'
+        AND COLUMN_NAME = 'status'
+      LIMIT 1
+    `
+  );
+
+  const columnType = String(rows[0]?.COLUMN_TYPE || '').toLowerCase();
+
+  if (columnType.startsWith('enum(')) {
+    if (columnType.includes("'completed'")) return 'completed';
+    if (columnType.includes("'checked_out'")) return 'checked_out';
+    if (columnType.includes("'abandoned'")) return 'abandoned';
+    return 'active';
+  }
+
+  return 'completed';
+}
+
 function cartApi(app) {
   app.post('/api/cart/items', async (req, res) => {
     try {
@@ -490,13 +514,14 @@ function cartApi(app) {
         [orderItemsValues]
       );
 
+      const checkoutStatus = await resolveCartCheckoutStatus(connection);
       const [updateCartResult] = await connection.query(
         `
           UPDATE carts
-          SET status = 'completed', checkout_at = CURRENT_TIMESTAMP
+          SET status = ?, checkout_at = CURRENT_TIMESTAMP
           WHERE id = ? AND status = 'active'
         `,
-        [cart.id]
+        [checkoutStatus, cart.id]
       );
 
       if (updateCartResult.affectedRows !== 1) {
