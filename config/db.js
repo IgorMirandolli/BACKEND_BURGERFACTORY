@@ -148,6 +148,11 @@ async function initDb() {
   `);
 
   await addColumnIfMissing('cart_items', 'notes', 'VARCHAR(500) NULL AFTER unit_price');
+  await addIndexIfMissing(
+    'cart_items',
+    'uq_cart_items_cart_product',
+    'UNIQUE KEY uq_cart_items_cart_product (cart_id, product_id)'
+  );
   await addIndexIfMissing('cart_items', 'idx_cart_items_cart_id', 'INDEX idx_cart_items_cart_id (cart_id)');
 
   await pool.query(`
