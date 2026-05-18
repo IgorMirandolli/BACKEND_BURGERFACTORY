@@ -18,32 +18,39 @@ function getUserIdFromAuthHeader(req) {
 }
 
 function getComputedStatus(order) {
-  if (order.status && order.status !== 'pending') {
-    return order.status;
-  }
-
-  const createdAt = new Date(order.created_at).getTime();
-  const elapsed = Date.now() - createdAt;
-
-  if (elapsed >= 24 * 1000) return 'delivered';
-  if (elapsed >= 12 * 1000) return 'on_the_way';
-  return 'preparing';
+  const normalizedStatus = normalizeStatus(order?.status);
+  return normalizedStatus || 'pending';
 }
 
 function getTrackingProgress(order) {
-  const createdAt = new Date(order.created_at).getTime();
-  const elapsed = Math.max(0, Date.now() - createdAt);
-  const total = 24 * 1000;
-  return Math.min(100, Number(((elapsed / total) * 100).toFixed(1)));
+  const status = getComputedStatus(order);
+  const progressMap = {
+    pending: 20,
+    preparing: 45,
+    on_the_way: 80,
+    delivered: 100,
+    cancelled: 0,
+  };
+
+  return progressMap[status] ?? 0;
+}
+
+function normalizeStatus(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+    .replace(/\s+/g, '_');
 }
 
 function normalizeOrder(order) {
   const computedStatus = getComputedStatus(order);
   const statusLabelMap = {
+    pending: 'Pendente',
     preparing: 'Sendo preparado',
     on_the_way: 'Saiu para entrega',
     delivered: 'Entregue',
-    pending: 'Sendo preparado',
+    cancelled: 'Cancelado',
   };
 
   return {
