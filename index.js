@@ -11,6 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '8mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
+app.use('/menu', express.static(path.join(__dirname, 'public', 'menu')));
 
 registerRoutes(app);
 

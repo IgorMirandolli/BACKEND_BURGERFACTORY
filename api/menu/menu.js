@@ -12,22 +12,30 @@ function menuApi(app) {
             p.name,
             p.description,
             p.price,
+            p.display_order AS displayOrder,
             p.image_url AS imageUrl
           FROM products p
           INNER JOIN categories c ON c.id = p.category_id
           WHERE c.is_active = 1
+            AND p.is_available = 1
           ORDER BY
             c.sort_order ASC,
+            p.display_order ASC,
             p.id ASC
         `
       );
 
       const items = rows.map((item) => {
         const imagePath = item.imageUrl || '';
-        const normalizedImageUrl = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+        const normalizedImageUrl = imagePath
+          ? imagePath.startsWith('/')
+            ? imagePath
+            : `/${imagePath}`
+          : '';
 
         return {
           ...item,
+          displayOrder: Number(item.displayOrder || 0),
           imageUrl: normalizedImageUrl,
         };
       });

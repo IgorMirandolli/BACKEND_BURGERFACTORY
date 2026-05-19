@@ -81,6 +81,65 @@ async function initDb() {
   await addColumnIfMissing('users', 'avatar_url', 'VARCHAR(500) NULL AFTER gender');
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      slug VARCHAR(120) NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT UNSIGNED NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_categories_slug (slug)
+    )
+  `);
+
+  await addColumnIfMissing('categories', 'sort_order', 'INT NOT NULL DEFAULT 0 AFTER slug');
+  await addColumnIfMissing('categories', 'is_active', 'TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER sort_order');
+  await addIndexIfMissing('categories', 'uq_categories_slug', 'UNIQUE KEY uq_categories_slug (slug)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      category_id INT NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      description TEXT NULL,
+      price DECIMAL(10,2) NOT NULL,
+      image_url TEXT NULL,
+      is_available TINYINT UNSIGNED NOT NULL DEFAULT 1,
+      is_featured TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      display_order INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_products_category_id (category_id),
+      INDEX idx_products_is_available (is_available),
+      INDEX idx_products_is_featured (is_featured),
+      CONSTRAINT fk_products_category
+        FOREIGN KEY (category_id) REFERENCES categories(id)
+        ON DELETE RESTRICT
+    )
+  `);
+
+  await addColumnIfMissing('products', 'is_available', 'TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER image_url');
+  await addColumnIfMissing('products', 'is_featured', 'TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER is_available');
+  await addColumnIfMissing('products', 'display_order', 'INT NOT NULL DEFAULT 0 AFTER is_featured');
+  await addIndexIfMissing('products', 'idx_products_category_id', 'INDEX idx_products_category_id (category_id)');
+  await addIndexIfMissing('products', 'idx_products_is_available', 'INDEX idx_products_is_available (is_available)');
+  await addIndexIfMissing('products', 'idx_products_is_featured', 'INDEX idx_products_is_featured (is_featured)');
+
+  await pool.query(`
+    INSERT INTO categories (name, slug, sort_order, is_active)
+    VALUES
+      ('Combos', 'combos', 1, 1),
+      ('Hamburgueres', 'hamburgueres', 2, 1),
+      ('Fritas', 'fritas', 3, 1),
+      ('Bebidas', 'bebidas', 4, 1),
+      ('Sobremesas', 'sobremesas', 5, 1)
+    ON DUPLICATE KEY UPDATE
+      sort_order = VALUES(sort_order),
+      is_active = is_active
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS user_addresses (
       id INT AUTO_INCREMENT PRIMARY KEY,
       user_id INT NOT NULL,
